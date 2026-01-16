@@ -219,19 +219,22 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
     else:
         cx, cy, cw, ch = 0, 0, w, h
 
+    def crop_roi(x_start: float, y_start: float, pad_ratio: float) -> np.ndarray:
+        x1 = cx + int(cw * x_start)
+        y1 = cy + int(ch * y_start)
+        x2 = cx + cw
+        y2 = cy + ch
+        pad = max(2, int(min(cw, ch) * pad_ratio))
+        x1 = max(cx, x1 - pad)
+        y1 = max(cy, y1 - pad)
+        x2 = min(cx + cw, x2 + pad)
+        y2 = min(cy + ch, y2 + pad)
+        if x2 <= x1 or y2 <= y1:
+            x1, y1, x2, y2 = int(w * x_start), int(h * y_start), w, h
+        return cell_bgr[y1:y2, x1:x2]
+
     # Crop more forgiving bottom-right ROI from detected card bounds
-    x1 = cx + int(cw * 0.60)
-    y1 = cy + int(ch * 0.78)
-    x2 = cx + cw
-    y2 = cy + ch
-    pad = max(2, int(min(cw, ch) * 0.02))
-    x1 = max(cx, x1 - pad)
-    y1 = max(cy, y1 - pad)
-    x2 = min(cx + cw, x2 + pad)
-    y2 = min(cy + ch, y2 + pad)
-    if x2 <= x1 or y2 <= y1:
-        x1, y1, x2, y2 = int(w * 0.60), int(h * 0.78), w, h
-    roi = cell_bgr[y1:y2, x1:x2]
+    roi = crop_roi(x_start=0.52, y_start=0.72, pad_ratio=0.05)
 
     # Upscale for OCR
     roi = cv2.resize(roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
@@ -293,9 +296,48 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
         if re.search(r"[^A-Z0-9\-\s]", best_text.upper()):
             conf = 0.70
 
+    if not best_code:
+        fallback_roi = crop_roi(x_start=0.48, y_start=0.68, pad_ratio=0.06)
+        fallback_roi = cv2.resize(fallback_roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(fallback_roi, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(fallback_roi, cv2.COLOR_BGR2HSV)
+        lab = cv2.cvtColor(fallback_roi, cv2.COLOR_BGR2LAB)
+        channels = [
+            ("gray", gray),
+            ("hsv_v", hsv[:, :, 2]),
+            ("lab_l", lab[:, :, 0]),
+        ]
+        candidates = []
+        for label, channel in channels:
+            candidates.extend(build_variants(channel, label))
+
+        for label, thr in candidates:
+            cleaned = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
+            text = pytesseract.image_to_string(cleaned, config=config).strip()
+            code = normalize_code(text)
+            score = 0.0
+            if code:
+                score = 1.0
+                if re.search(r"[^A-Z0-9\-\s]", text.upper()):
+                    score -= 0.15
+            if score > best_score:
+                best_score = score
+                best_code = code
+                best_text = text
+                best_thr = cleaned
+                best_label = f"fallback_{label}"
+        if best_code:
+            conf = 0.85
+            if re.search(r"[^A-Z0-9\-\s]", best_text.upper()):
+                conf = 0.70
+    else:
+        fallback_roi = None
+
     if debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(debug_dir, f"{tag}_roi.png"), roi)
+        if fallback_roi is not None:
+            cv2.imwrite(os.path.join(debug_dir, f"{tag}_roi_fallback.png"), fallback_roi)
         if best_thr is not None:
             cv2.imwrite(os.path.join(debug_dir, f"{tag}_thr_{best_label}.png"), best_thr)
 
