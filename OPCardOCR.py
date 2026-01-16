@@ -236,43 +236,70 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
     # Upscale for OCR
     roi = cv2.resize(roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
 
-    # Try to isolate the colored footer (often red) but still works for non-red via fallback
+    def build_variants(channel: np.ndarray, label: str) -> List[Tuple[str, np.ndarray]]:
+        variants: List[Tuple[str, np.ndarray]] = []
+        blur = cv2.GaussianBlur(channel, (3, 3), 0)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(blur)
+
+        variants.append((f"{label}_otsu", cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]))
+        variants.append((f"{label}_clahe_otsu", cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]))
+        variants.append((f"{label}_adapt", cv2.adaptiveThreshold(
+            blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 5
+        )))
+        variants.append((f"{label}_clahe_adapt", cv2.adaptiveThreshold(
+            clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 5
+        )))
+        return variants
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    mask1 = cv2.inRange(hsv, (0, 60, 40), (10, 255, 255))
-    mask2 = cv2.inRange(hsv, (170, 60, 40), (180, 255, 255))
-    redmask = cv2.bitwise_or(mask1, mask2)
-    masked = cv2.bitwise_and(roi, roi, mask=redmask)
+    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+    channels = [
+        ("gray", gray),
+        ("hsv_v", hsv[:, :, 2]),
+        ("lab_l", lab[:, :, 0]),
+    ]
 
-    # If redmask is too small (leader colors etc.), fallback to raw roi
-    if float(np.count_nonzero(redmask)) / redmask.size < 0.02:
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = cv2.cvtColor(masked, cv2.COLOR_BGR2GRAY)
-
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-
-    # Slight cleanup
-    thr = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
+    candidates: List[Tuple[str, np.ndarray]] = []
+    for label, channel in channels:
+        candidates.extend(build_variants(channel, label))
 
     config = "--oem 3 --psm 7 -c tessedit_char_whitelist=OPBE0123456789-"
-    text = pytesseract.image_to_string(thr, config=config).strip()
+    best_code: Optional[str] = None
+    best_text = ""
+    best_score = -1.0
+    best_thr: Optional[np.ndarray] = None
+    best_label = ""
 
-    code = normalize_code(text)
+    for label, thr in candidates:
+        cleaned = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
+        text = pytesseract.image_to_string(cleaned, config=config).strip()
+        code = normalize_code(text)
+        score = 0.0
+        if code:
+            score = 1.0
+            if re.search(r"[^A-Z0-9\-\s]", text.upper()):
+                score -= 0.15
+        if score > best_score:
+            best_score = score
+            best_code = code
+            best_text = text
+            best_thr = cleaned
+            best_label = label
 
     conf = 0.0
-    if code:
+    if best_code:
         conf = 0.85
-        # Penalize if OCR text contains junk
-        if re.search(r"[^A-Z0-9\-\s]", text.upper()):
+        if re.search(r"[^A-Z0-9\-\s]", best_text.upper()):
             conf = 0.70
 
     if debug_dir:
         os.makedirs(debug_dir, exist_ok=True)
         cv2.imwrite(os.path.join(debug_dir, f"{tag}_roi.png"), roi)
-        cv2.imwrite(os.path.join(debug_dir, f"{tag}_thr.png"), thr)
+        if best_thr is not None:
+            cv2.imwrite(os.path.join(debug_dir, f"{tag}_thr_{best_label}.png"), best_thr)
 
-    return code, conf
+    return best_code, conf
 
 
 def process_image(path: str, rows: int, cols: int, debug: bool) -> Dict[str, Any]:
