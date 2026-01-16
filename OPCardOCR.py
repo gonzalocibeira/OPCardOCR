@@ -195,23 +195,39 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
             return None
 
         cell_area = float(h * w)
-        best = None
-        best_area = 0.0
+        candidates = []
         for c in contours:
             area = cv2.contourArea(c)
-            if area < 0.35 * cell_area:
+            if area < 0.25 * cell_area:
                 continue
-            x, y, cw, ch = cv2.boundingRect(c)
-            if cw == 0 or ch == 0:
+            rect = cv2.minAreaRect(c)
+            (rw, rh) = rect[1]
+            if rw == 0 or rh == 0:
                 continue
-            aspect = cw / float(ch)
-            if not (0.55 <= aspect <= 0.95):
+            aspect = min(rw, rh) / max(rw, rh)
+            if not (0.45 <= aspect <= 1.10):
                 continue
-            if area > best_area:
-                best_area = area
-                best = (x, y, cw, ch)
+            rect_area = float(rw * rh)
+            box = cv2.boxPoints(rect)
+            box = np.int0(box)
+            mask = np.zeros(edges.shape, dtype=np.uint8)
+            cv2.drawContours(mask, [box], -1, 255, -1)
+            mask_area = cv2.countNonZero(mask)
+            if mask_area == 0:
+                continue
+            edge_pixels = cv2.countNonZero(cv2.bitwise_and(edges, edges, mask=mask))
+            edge_density = edge_pixels / float(mask_area)
+            x, y, cw, ch = cv2.boundingRect(box)
+            candidates.append((rect_area, edge_density, (x, y, cw, ch)))
 
-        return best
+        if not candidates:
+            return None
+
+        max_area = max(candidate[0] for candidate in candidates)
+        area_threshold = 0.9 * max_area
+        filtered = [candidate for candidate in candidates if candidate[0] >= area_threshold]
+        _, _, best_bounds = max(filtered, key=lambda item: item[1])
+        return best_bounds
 
     card_bounds = detect_card_bounds()
     if card_bounds:
