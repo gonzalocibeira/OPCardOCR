@@ -201,6 +201,48 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
     h, w = cell_bgr.shape[:2]
 
     def detect_card_bounds() -> Optional[Tuple[int, int, int, int]]:
+        def evaluate_contours(contours: List[np.ndarray], score_edges: Optional[np.ndarray]) -> Optional[Tuple[int, int, int, int]]:
+            if not contours:
+                return None
+
+            cell_area = float(h * w)
+            candidates = []
+            for c in contours:
+                area = cv2.contourArea(c)
+                if area < 0.20 * cell_area:
+                    continue
+                rect = cv2.minAreaRect(c)
+                (rw, rh) = rect[1]
+                if rw == 0 or rh == 0:
+                    continue
+                aspect = min(rw, rh) / max(rw, rh)
+                if not (0.45 <= aspect <= 1.10):
+                    continue
+                rect_area = float(rw * rh)
+                box = cv2.boxPoints(rect)
+                box = box.astype(np.intp)
+                mask = np.zeros((h, w), dtype=np.uint8)
+                cv2.drawContours(mask, [box], -1, 255, -1)
+                mask_area = cv2.countNonZero(mask)
+                if mask_area == 0:
+                    continue
+                edge_density = 0.0
+                if score_edges is not None:
+                    edge_pixels = cv2.countNonZero(cv2.bitwise_and(score_edges, score_edges, mask=mask))
+                    edge_density = edge_pixels / float(mask_area)
+                rect_fill = area / rect_area if rect_area else 0.0
+                x, y, cw, ch = cv2.boundingRect(box)
+                candidates.append((rect_area, edge_density, rect_fill, (x, y, cw, ch)))
+
+            if not candidates:
+                return None
+
+            max_area = max(candidate[0] for candidate in candidates)
+            area_threshold = 0.9 * max_area
+            filtered = [candidate for candidate in candidates if candidate[0] >= area_threshold]
+            _, _, _, best_bounds = max(filtered, key=lambda item: (item[1], item[2]))
+            return best_bounds
+
         gray = cv2.cvtColor(cell_bgr, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(gray, 40, 140)
@@ -208,46 +250,23 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
         edges = cv2.erode(edges, None, iterations=1)
 
         contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None
+        best_bounds = evaluate_contours(contours, edges)
+        if best_bounds is not None:
+            return best_bounds
 
-        cell_area = float(h * w)
-        candidates = []
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < 0.25 * cell_area:
-                continue
-            rect = cv2.minAreaRect(c)
-            (rw, rh) = rect[1]
-            if rw == 0 or rh == 0:
-                continue
-            aspect = min(rw, rh) / max(rw, rh)
-            if not (0.45 <= aspect <= 1.10):
-                continue
-            rect_area = float(rw * rh)
-            box = cv2.boxPoints(rect)
-            box = box.astype(np.intp)
-            mask = np.zeros(edges.shape, dtype=np.uint8)
-            cv2.drawContours(mask, [box], -1, 255, -1)
-            mask_area = cv2.countNonZero(mask)
-            if mask_area == 0:
-                continue
-            edge_pixels = cv2.countNonZero(cv2.bitwise_and(edges, edges, mask=mask))
-            edge_density = edge_pixels / float(mask_area)
-            x, y, cw, ch = cv2.boundingRect(box)
-            candidates.append((rect_area, edge_density, (x, y, cw, ch)))
-
-        if not candidates:
-            return None
-
-        max_area = max(candidate[0] for candidate in candidates)
-        area_threshold = 0.9 * max_area
-        filtered = [candidate for candidate in candidates if candidate[0] >= area_threshold]
-        _, _, best_bounds = max(filtered, key=lambda item: item[1])
-        return best_bounds
+        # Secondary pass: isolate high-contrast bright card border via adaptive threshold + morphology
+        adaptive = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, -5
+        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        morph = cv2.morphologyEx(adaptive, cv2.MORPH_CLOSE, kernel, iterations=2)
+        morph = cv2.morphologyEx(morph, cv2.MORPH_OPEN, kernel, iterations=1)
+        contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return evaluate_contours(contours, None)
 
     card_bounds = detect_card_bounds()
-    if card_bounds:
+    has_card_bounds = card_bounds is not None
+    if has_card_bounds:
         cx, cy, cw, ch = card_bounds
     else:
         cx, cy, cw, ch = 0, 0, w, h
@@ -267,7 +286,10 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
         return cell_bgr[y1:y2, x1:x2]
 
     # Crop more forgiving bottom-right ROI from detected card bounds
-    roi = crop_roi(x_start=0.50, y_start=0.70, pad_ratio=0.07)
+    if has_card_bounds:
+        roi = crop_roi(x_start=0.50, y_start=0.70, pad_ratio=0.07)
+    else:
+        roi = crop_roi(x_start=0.42, y_start=0.62, pad_ratio=0.12)
 
     # Upscale for OCR
     roi = cv2.resize(roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
@@ -330,7 +352,10 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
             conf = 0.70
 
     if not best_code:
-        fallback_roi = crop_roi(x_start=0.49, y_start=0.69, pad_ratio=0.07)
+        if has_card_bounds:
+            fallback_roi = crop_roi(x_start=0.49, y_start=0.69, pad_ratio=0.07)
+        else:
+            fallback_roi = crop_roi(x_start=0.40, y_start=0.60, pad_ratio=0.12)
         fallback_roi = cv2.resize(fallback_roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(fallback_roi, cv2.COLOR_BGR2GRAY)
         hsv = cv2.cvtColor(fallback_roi, cv2.COLOR_BGR2HSV)
