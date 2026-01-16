@@ -183,10 +183,55 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
     """
     h, w = cell_bgr.shape[:2]
 
-    # Crop tighter bottom-right ROI (tuned for your binder photos)
-    x1 = int(w * 0.68)
-    y1 = int(h * 0.82)
-    roi = cell_bgr[y1:h, x1:w]
+    def detect_card_bounds() -> Optional[Tuple[int, int, int, int]]:
+        gray = cv2.cvtColor(cell_bgr, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(gray, 40, 140)
+        edges = cv2.dilate(edges, None, iterations=2)
+        edges = cv2.erode(edges, None, iterations=1)
+
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        cell_area = float(h * w)
+        best = None
+        best_area = 0.0
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 0.35 * cell_area:
+                continue
+            x, y, cw, ch = cv2.boundingRect(c)
+            if cw == 0 or ch == 0:
+                continue
+            aspect = cw / float(ch)
+            if not (0.55 <= aspect <= 0.95):
+                continue
+            if area > best_area:
+                best_area = area
+                best = (x, y, cw, ch)
+
+        return best
+
+    card_bounds = detect_card_bounds()
+    if card_bounds:
+        cx, cy, cw, ch = card_bounds
+    else:
+        cx, cy, cw, ch = 0, 0, w, h
+
+    # Crop more forgiving bottom-right ROI from detected card bounds
+    x1 = cx + int(cw * 0.60)
+    y1 = cy + int(ch * 0.78)
+    x2 = cx + cw
+    y2 = cy + ch
+    pad = max(2, int(min(cw, ch) * 0.02))
+    x1 = max(cx, x1 - pad)
+    y1 = max(cy, y1 - pad)
+    x2 = min(cx + cw, x2 + pad)
+    y2 = min(cy + ch, y2 + pad)
+    if x2 <= x1 or y2 <= y1:
+        x1, y1, x2, y2 = int(w * 0.60), int(h * 0.78), w, h
+    roi = cell_bgr[y1:y2, x1:x2]
 
     # Upscale for OCR
     roi = cv2.resize(roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
