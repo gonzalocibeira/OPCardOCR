@@ -108,13 +108,30 @@ def detect_page_quad(img: np.ndarray) -> Optional[np.ndarray]:
     return box.astype(np.float32)
 
 
-def slice_grid(warped: np.ndarray, rows: int = 3, cols: int = 3, margin: float = 0.01) -> List[Tuple[int,int,int,int]]:
+def slice_grid(
+    warped: np.ndarray,
+    rows: int = 3,
+    cols: int = 3,
+    margin: Tuple[float, float, float, float] | float = 0.01,
+) -> List[Tuple[int, int, int, int]]:
     """Return list of cell rectangles (x,y,w,h) in reading order."""
     h, w = warped.shape[:2]
-    mx = int(w * margin)
-    my = int(h * margin)
-    usable_w = w - 2 * mx
-    usable_h = h - 2 * my
+    if isinstance(margin, tuple):
+        if len(margin) == 2:
+            ml, mt = margin
+            mr, mb = margin
+        elif len(margin) == 4:
+            ml, mt, mr, mb = margin
+        else:
+            raise ValueError("margin must be a float or a 2/4-tuple of floats")
+    else:
+        ml = mt = mr = mb = margin
+    mx_l = int(w * ml)
+    mx_r = int(w * mr)
+    my_t = int(h * mt)
+    my_b = int(h * mb)
+    usable_w = w - (mx_l + mx_r)
+    usable_h = h - (my_t + my_b)
 
     cell_w = usable_w / cols
     cell_h = usable_h / rows
@@ -122,10 +139,10 @@ def slice_grid(warped: np.ndarray, rows: int = 3, cols: int = 3, margin: float =
     boxes = []
     for r in range(rows):
         for c in range(cols):
-            x1 = int(mx + c * cell_w)
-            y1 = int(my + r * cell_h)
-            x2 = int(mx + (c + 1) * cell_w)
-            y2 = int(my + (r + 1) * cell_h)
+            x1 = int(mx_l + c * cell_w)
+            y1 = int(my_t + r * cell_h)
+            x2 = int(mx_l + (c + 1) * cell_w)
+            y2 = int(my_t + (r + 1) * cell_h)
             boxes.append((x1, y1, x2 - x1, y2 - y1))
     return boxes
 
@@ -371,7 +388,7 @@ def process_image(path: str, rows: int, cols: int, debug: bool) -> Dict[str, Any
     else:
         warped = four_point_warp(img, quad, out_w=1800)
 
-    boxes = slice_grid(warped, rows=rows, cols=cols, margin=0.01)
+    boxes = slice_grid(warped, rows=rows, cols=cols, margin=(0.01, 0.01, 0.006, 0.006))
 
     debug_dir = None
     if debug:
@@ -383,7 +400,15 @@ def process_image(path: str, rows: int, cols: int, debug: bool) -> Dict[str, Any
     found_codes = set()
 
     for idx, (x, y, w, h) in enumerate(boxes, start=1):
-        cell = warped[y:y+h, x:x+w]
+        pad_x_left = int(w * 0.01)
+        pad_x_right = int(w * 0.02)
+        pad_y_top = int(h * 0.01)
+        pad_y_bottom = int(h * 0.02)
+        x1 = max(0, x - pad_x_left)
+        y1 = max(0, y - pad_y_top)
+        x2 = min(warped.shape[1], x + w + pad_x_right)
+        y2 = min(warped.shape[0], y + h + pad_y_bottom)
+        cell = warped[y1:y2, x1:x2]
         occ = is_occupied(cell)
 
         code = None
