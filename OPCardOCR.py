@@ -226,7 +226,7 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
                 continue
             rect_area = float(rw * rh)
             box = cv2.boxPoints(rect)
-            box = np.int0(box)
+            box = box.astype(np.intp)
             mask = np.zeros(edges.shape, dtype=np.uint8)
             cv2.drawContours(mask, [box], -1, 255, -1)
             mask_area = cv2.countNonZero(mask)
