@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 One Piece TCG binder page -> card code extractor
-- Input: folder of page photos (each page is a 9x9 grid; some slots empty)
+- Input: folder of page photos (each page is a 3x3 grid; some slots empty)
 - Output: JSON "database" of detected card codes per image + unique codes
 
 Pipeline:
 1) Detect page boundary + perspective warp to a flat rectangle
-2) Slice into 9x9 cells (fixed grid)
+2) Slice into 3x3 cells (fixed grid)
 3) For each cell, decide if it's occupied
 4) If occupied, crop bottom-right "code ROI"
 5) OCR with Tesseract + strict regex normalization
@@ -108,7 +108,7 @@ def detect_page_quad(img: np.ndarray) -> Optional[np.ndarray]:
     return box.astype(np.float32)
 
 
-def slice_grid(warped: np.ndarray, rows: int = 9, cols: int = 9, margin: float = 0.01) -> List[Tuple[int,int,int,int]]:
+def slice_grid(warped: np.ndarray, rows: int = 3, cols: int = 3, margin: float = 0.01) -> List[Tuple[int,int,int,int]]:
     """Return list of cell rectangles (x,y,w,h) in reading order."""
     h, w = warped.shape[:2]
     mx = int(w * margin)
@@ -295,8 +295,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="Folder with binder page photos")
     ap.add_argument("--output", default="cards.json", help="Output JSON file")
-    ap.add_argument("--rows", type=int, default=9, help="Grid rows (default 9)")
-    ap.add_argument("--cols", type=int, default=9, help="Grid cols (default 9)")
+    ap.add_argument("--rows", type=int, default=3, help="Grid rows (default 3)")
+    ap.add_argument("--cols", type=int, default=3, help="Grid cols (default 3)")
     ap.add_argument("--min_conf", type=float, default=0.70, help="Keep codes with confidence >= this")
     ap.add_argument("--debug", action="store_true", help="Write debug warped/crops next to images in _debug/")
     args = ap.parse_args()
