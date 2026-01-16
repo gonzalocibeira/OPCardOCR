@@ -299,14 +299,53 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
         blur = cv2.GaussianBlur(channel, (3, 3), 0)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(blur)
 
-        variants.append((f"{label}_otsu", cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]))
-        variants.append((f"{label}_clahe_otsu", cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]))
-        variants.append((f"{label}_adapt", cv2.adaptiveThreshold(
+        def add_variant(name: str, img: np.ndarray) -> None:
+            variants.append((name, img))
+            close_kernel = np.ones((2, 2), np.uint8)
+            closed = cv2.morphologyEx(img, cv2.MORPH_CLOSE, close_kernel, iterations=1)
+            variants.append((f"{name}_close", closed))
+
+        add_variant(
+            f"{label}_otsu",
+            cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+        )
+        add_variant(
+            f"{label}_otsu_inv",
+            cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1],
+        )
+        add_variant(
+            f"{label}_clahe_otsu",
+            cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+        )
+        add_variant(
+            f"{label}_clahe_otsu_inv",
+            cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1],
+        )
+        add_variant(
+            f"{label}_adapt",
+            cv2.adaptiveThreshold(
             blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 5
-        )))
-        variants.append((f"{label}_clahe_adapt", cv2.adaptiveThreshold(
+            ),
+        )
+        add_variant(
+            f"{label}_clahe_adapt",
+            cv2.adaptiveThreshold(
             clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 5
-        )))
+            ),
+        )
+        if label == "hsv_v":
+            strong = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8)).apply(channel)
+            strong = cv2.GaussianBlur(strong, (3, 3), 0)
+            add_variant(
+                f"{label}_strong_otsu",
+                cv2.threshold(strong, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+            )
+            add_variant(
+                f"{label}_strong_adapt",
+                cv2.adaptiveThreshold(
+                    strong, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 5
+                ),
+            )
         return variants
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -328,14 +367,16 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
     best_score = -1.0
     best_thr: Optional[np.ndarray] = None
     best_label = ""
+    code_pattern = re.compile(r"\b(?:OP|EB)\s*0?\d{1,2}\s*[-–—]\s*\d{3}\b", re.IGNORECASE)
 
     for label, thr in candidates:
-        cleaned = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
+        open_kernel = np.ones((1, 1), np.uint8) if "_close" in label else np.ones((2, 2), np.uint8)
+        cleaned = cv2.morphologyEx(thr, cv2.MORPH_OPEN, open_kernel, iterations=1)
         text = pytesseract.image_to_string(cleaned, config=config).strip()
         code = normalize_code(text)
         score = 0.0
         if code:
-            score = 1.0
+            score = 2.0 if code_pattern.search(text) else 1.0
             if re.search(r"[^A-Z0-9\-\s]", text.upper()):
                 score -= 0.15
         if score > best_score:
@@ -370,12 +411,13 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
             candidates.extend(build_variants(channel, label))
 
         for label, thr in candidates:
-            cleaned = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
+            open_kernel = np.ones((1, 1), np.uint8) if "_close" in label else np.ones((2, 2), np.uint8)
+            cleaned = cv2.morphologyEx(thr, cv2.MORPH_OPEN, open_kernel, iterations=1)
             text = pytesseract.image_to_string(cleaned, config=config).strip()
             code = normalize_code(text)
             score = 0.0
             if code:
-                score = 1.0
+                score = 2.0 if code_pattern.search(text) else 1.0
                 if re.search(r"[^A-Z0-9\-\s]", text.upper()):
                     score -= 0.15
             if score > best_score:
