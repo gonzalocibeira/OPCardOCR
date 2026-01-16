@@ -112,7 +112,8 @@ def slice_grid(
     warped: np.ndarray,
     rows: int = 3,
     cols: int = 3,
-    margin: Tuple[float, float, float, float] | float = 0.01,
+    margin: Tuple[float, float, float, float] | float = 0.005,
+    cell_expand_px: int = 0,
 ) -> List[Tuple[int, int, int, int]]:
     """Return list of cell rectangles (x,y,w,h) in reading order."""
     h, w = warped.shape[:2]
@@ -143,6 +144,11 @@ def slice_grid(
             y1 = int(my_t + r * cell_h)
             x2 = int(mx_l + (c + 1) * cell_w)
             y2 = int(my_t + (r + 1) * cell_h)
+            if cell_expand_px:
+                x1 = max(0, x1 - cell_expand_px)
+                y1 = max(0, y1 - cell_expand_px)
+                x2 = min(w, x2 + cell_expand_px)
+                y2 = min(h, y2 + cell_expand_px)
             boxes.append((x1, y1, x2 - x1, y2 - y1))
     return boxes
 
@@ -455,7 +461,13 @@ def process_image(path: str, rows: int, cols: int, debug: bool) -> Dict[str, Any
     else:
         warped = four_point_warp(img, quad, out_w=1800)
 
-    boxes = slice_grid(warped, rows=rows, cols=cols, margin=(0.01, 0.01, 0.006, 0.006))
+    boxes = slice_grid(
+        warped,
+        rows=rows,
+        cols=cols,
+        margin=(0.008, 0.008, 0.004, 0.004),
+        cell_expand_px=4,
+    )
 
     debug_dir = None
     if debug:
