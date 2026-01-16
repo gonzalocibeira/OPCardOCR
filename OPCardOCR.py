@@ -267,7 +267,7 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
         return cell_bgr[y1:y2, x1:x2]
 
     # Crop more forgiving bottom-right ROI from detected card bounds
-    roi = crop_roi(x_start=0.52, y_start=0.72, pad_ratio=0.05)
+    roi = crop_roi(x_start=0.50, y_start=0.70, pad_ratio=0.07)
 
     # Upscale for OCR
     roi = cv2.resize(roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
@@ -330,7 +330,7 @@ def extract_code_from_cell(cell_bgr: np.ndarray, debug_dir: Optional[str], tag: 
             conf = 0.70
 
     if not best_code:
-        fallback_roi = crop_roi(x_start=0.48, y_start=0.68, pad_ratio=0.06)
+        fallback_roi = crop_roi(x_start=0.49, y_start=0.69, pad_ratio=0.07)
         fallback_roi = cv2.resize(fallback_roi, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(fallback_roi, cv2.COLOR_BGR2GRAY)
         hsv = cv2.cvtColor(fallback_roi, cv2.COLOR_BGR2HSV)
